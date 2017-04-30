@@ -22,6 +22,7 @@
 #include <linux/wait.h>
 #include <linux/pr.h>
 #include <linux/vmalloc.h>
+#include <linux/iosched_switcher.h>
 
 #define DM_MSG_PREFIX "core"
 
@@ -1604,6 +1605,8 @@ static struct mapped_device *alloc_dev(int minor)
 	spin_unlock(&_minor_lock);
 
 	BUG_ON(old_md != MINOR_ALLOCED);
+
+	init_iosched_switcher(md->queue);
 
 	return md;
 
