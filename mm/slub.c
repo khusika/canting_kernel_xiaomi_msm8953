@@ -34,7 +34,6 @@
 #include <linux/stacktrace.h>
 #include <linux/prefetch.h>
 #include <linux/memcontrol.h>
-#include <linux/random.h>
 
 #include <trace/events/kmem.h>
 
@@ -207,8 +206,6 @@ struct track {
 
 enum track_item { TRACK_ALLOC, TRACK_FREE };
 
-static const bool slub_cookie = true;
-
 #ifdef CONFIG_SYSFS
 static int sysfs_slab_add(struct kmem_cache *);
 static int sysfs_slab_alias(struct kmem_cache *, const char *);
@@ -237,28 +234,20 @@ static inline void stat(const struct kmem_cache *s, enum stat_item si)
 
 static inline void *get_freepointer(struct kmem_cache *s, void *object)
 {
-	unsigned long freepointer_addr = (unsigned long)object + s->offset;
-	return (void *)(*(unsigned long *)freepointer_addr ^ s->random ^ freepointer_addr);
+	return *(void **)(object + s->offset);
 }
 
 static void prefetch_freepointer(const struct kmem_cache *s, void *object)
 {
-	unsigned long freepointer_addr = (unsigned long)object + s->offset;
-	if (object) {
-		void **freepointer_ptr = (void **)(*(unsigned long *)freepointer_addr ^ s->random ^ freepointer_addr);
-		prefetch(freepointer_ptr);
-	}
+	prefetch(object + s->offset);
 }
 
 static inline void *get_freepointer_safe(struct kmem_cache *s, void *object)
 {
-	unsigned long __maybe_unused freepointer_addr;
 	void *p;
 
 #ifdef CONFIG_DEBUG_PAGEALLOC
-	freepointer_addr = (unsigned long)object + s->offset;
-	probe_kernel_read(&p, (void **)freepointer_addr, sizeof(p));
-	return (void *)((unsigned long)p ^ s->random ^ freepointer_addr);
+	probe_kernel_read(&p, (void **)(object + s->offset), sizeof(p));
 #else
 	p = get_freepointer(s, object);
 #endif
@@ -267,38 +256,7 @@ static inline void *get_freepointer_safe(struct kmem_cache *s, void *object)
 
 static inline void set_freepointer(struct kmem_cache *s, void *object, void *fp)
 {
-	unsigned long freepointer_addr = (unsigned long)object + s->offset;
-	*(void **)freepointer_addr = (void *)((unsigned long)fp ^ s->random ^ freepointer_addr);
-}
-
-#ifdef CONFIG_64BIT
-static const unsigned long canary_mask = ~0xFFUL;
-#else
-static const unsigned long canary_mask = ~0UL;
-#endif
-
-static inline unsigned long *get_cookie(struct kmem_cache *s, void *object)
-{
-	if (s->offset)
-		return object + s->offset + sizeof(void *);
-	else
-		return object + s->inuse;
-}
-
-static inline void set_cookie(struct kmem_cache *s, void *object, unsigned long value)
-{
-	if (slub_cookie) {
-		unsigned long *cookie = get_cookie(s, object);
-		*cookie = (value ^ (unsigned long)cookie) & canary_mask;
-	}
-}
-
-static inline void check_cookie(struct kmem_cache *s, void *object, unsigned long value)
-{
-	if (slub_cookie) {
-		unsigned long *cookie = get_cookie(s, object);
-		BUG_ON(*cookie != ((value ^ (unsigned long)cookie) & canary_mask));
-	}
+	*(void **)(object + s->offset) = fp;
 }
 
 /* Loop over all objects in a slab */
@@ -334,7 +292,7 @@ static inline size_t slab_ksize(const struct kmem_cache *s)
 	 * back there or track user information then we can
 	 * only use the space before that information.
 	 */
-	if ((s->flags & (SLAB_DESTROY_BY_RCU | SLAB_STORE_USER)) || slub_cookie)
+	if (s->flags & (SLAB_DESTROY_BY_RCU | SLAB_STORE_USER))
 		return s->inuse;
 	/*
 	 * Else we can use all the padding etc for the allocation
@@ -573,9 +531,9 @@ static struct track *get_track(struct kmem_cache *s, void *object,
 	struct track *p;
 
 	if (s->offset)
-		p = object + s->offset + sizeof(void *) + sizeof(void *) * slub_cookie;
+		p = object + s->offset + sizeof(void *);
 	else
-		p = object + s->inuse + sizeof(void *) * slub_cookie;
+		p = object + s->inuse;
 
 	return p + alloc;
 }
@@ -714,9 +672,6 @@ static void print_trailer(struct kmem_cache *s, struct page *page, u8 *p)
 	else
 		off = s->inuse;
 
-	if (slub_cookie)
-		off += sizeof(void *);
-
 	if (s->flags & SLAB_STORE_USER)
 		off += 2 * sizeof(struct track);
 
@@ -853,9 +808,6 @@ static int check_pad_bytes(struct kmem_cache *s, struct page *page, u8 *p)
 
 	if (s->offset)
 		/* Freepointer is placed after the object. */
-		off += sizeof(void *);
-
-	if (slub_cookie)
 		off += sizeof(void *);
 
 	if (s->flags & SLAB_STORE_USER)
@@ -1496,7 +1448,6 @@ static void setup_object(struct kmem_cache *s, struct page *page,
 				void *object)
 {
 	setup_object_debug(s, page, object);
-	set_cookie(s, object, s->random_inactive);
 	if (unlikely(s->ctor)) {
 		kasan_unpoison_object_data(s, object);
 		s->ctor(object);
@@ -2580,18 +2531,8 @@ redo:
 		stat(s, ALLOC_FASTPATH);
 	}
 
-	if (!(s->flags & (SLAB_DESTROY_BY_RCU | SLAB_POISON)) && !s->ctor && object) {
-		size_t offset = s->offset ? 0 : sizeof(void *);
-		BUG_ON(memchr_inv((void *)object + offset, 0, s->object_size - offset));
-	}
-
 	if (unlikely(gfpflags & __GFP_ZERO) && object)
 		memset(object, 0, s->object_size);
-
-	if (object) {
-		check_cookie(s, object, s->random_inactive);
-		set_cookie(s, object, s->random_active);
-	}
 
 	slab_post_alloc_hook(s, gfpflags, object);
 
@@ -2795,16 +2736,6 @@ static __always_inline void slab_free(struct kmem_cache *s,
 	unsigned long tid;
 
 	slab_free_hook(s, x);
-
-	check_cookie(s, object, s->random_active);
-	set_cookie(s, object, s->random_inactive);
-
-	if (!(s->flags & (SLAB_DESTROY_BY_RCU | SLAB_POISON))) {
-		size_t offset = s->offset ? 0 : sizeof(void *);
-		memset(x + offset, 0, s->object_size - offset);
-		if (s->ctor)
-			s->ctor(x);
-	}
 
 redo:
 	/*
@@ -3042,7 +2973,6 @@ static void early_kmem_cache_node_alloc(int node)
 	init_object(kmem_cache_node, n, SLUB_RED_ACTIVE);
 	init_tracking(kmem_cache_node, n);
 #endif
-	set_cookie(kmem_cache_node, n, kmem_cache_node->random_active);
 	kasan_kmalloc(kmem_cache_node, n, sizeof(struct kmem_cache_node));
 	init_kmem_cache_node(n);
 	inc_slabs_node(kmem_cache_node, node, page->objects);
@@ -3158,9 +3088,6 @@ static int calculate_sizes(struct kmem_cache *s, int forced_order)
 		size += sizeof(void *);
 	}
 
-	if (slub_cookie)
-		size += sizeof(void *);
-
 #ifdef CONFIG_SLUB_DEBUG
 	if (flags & SLAB_STORE_USER)
 		/*
@@ -3224,9 +3151,6 @@ static int calculate_sizes(struct kmem_cache *s, int forced_order)
 static int kmem_cache_open(struct kmem_cache *s, unsigned long flags)
 {
 	s->flags = kmem_cache_flags(s->size, flags, s->name, s->ctor);
-	s->random = get_random_long();
-	s->random_active = get_random_long();
-	s->random_inactive = get_random_long();
 	s->reserved = 0;
 
 	if (need_reserve_slab_rcu && (s->flags & SLAB_DESTROY_BY_RCU))
@@ -3489,7 +3413,7 @@ static size_t __ksize(const void *object)
 	page = virt_to_head_page(object);
 
 	if (unlikely(!PageSlab(page))) {
-		BUG_ON(!PageCompound(page));
+		WARN_ON(!PageCompound(page));
 		return PAGE_SIZE << compound_order(page);
 	}
 
@@ -3527,8 +3451,6 @@ const char *__check_heap_object(const void *ptr, unsigned long n,
 			return s->name;
 		offset -= s->red_left_pad;
 	}
-
-	check_cookie(s, (void *)ptr - offset, s->random_active);
 
 	/* Allow address range falling entirely within object size. */
 	if (offset <= object_size && n <= object_size - offset)

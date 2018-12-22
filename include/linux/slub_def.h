@@ -94,10 +94,6 @@ struct kmem_cache {
 #endif
 #endif
 
-	unsigned long random;
-	unsigned long random_active;
-	unsigned long random_inactive;
-
 #ifdef CONFIG_NUMA
 	/*
 	 * Defragmentation by allocating from a remote node.
