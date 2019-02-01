@@ -51,7 +51,6 @@
 #include <linux/async.h>
 #include <linux/slab.h>
 #include <linux/pm_runtime.h>
-#include <linux/iosched_switcher.h>
 #include <linux/pr.h>
 #include <linux/t10-pi.h>
 #include <asm/uaccess.h>
@@ -3055,10 +3054,6 @@ static int sd_probe(struct device *dev)
 
 	get_device(&sdkp->dev);	/* prevent release before async_schedule */
 	async_schedule_domain(sd_probe_async, sdkp, &scsi_sd_probe_domain);
-
-	if (!strcmp(sdkp->disk->disk_name, "sda") ||
-		!strcmp(sdkp->disk->disk_name, "sde"))
-		init_iosched_switcher(sdp->request_queue);
 
 	return 0;
 
