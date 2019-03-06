@@ -723,7 +723,6 @@ struct proc_info_list *lookup_processor(u32 midr)
 {
 	struct proc_info_list *list = lookup_processor_type(midr);
 
-	arm_init_bp_hardening();
 	if (!list) {
 		pr_err("CPU%u: configuration botched (ID %08x), CPU halted\n",
 		       smp_processor_id(), midr);
