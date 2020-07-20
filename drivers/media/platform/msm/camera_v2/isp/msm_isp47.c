@@ -714,7 +714,9 @@ void msm_isp47_preprocess_camif_irq(struct vfe_device *vfe_dev,
 		vfe_dev->axi_data.src_info[VFE_PIX_0].accept_frame = false;
 	if (irq_status0 & BIT(0)) {
 		vfe_dev->axi_data.src_info[VFE_PIX_0].accept_frame = true;
+#ifndef CONFIG_MACH_XIAOMI_MSM8953
 		vfe_dev->irq_sof_id++;
+#endif
 	}
 }
 
